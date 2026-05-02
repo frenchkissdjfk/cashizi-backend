@@ -16,7 +16,7 @@ app.use(express.json({ limit: "10mb" }));
 
 // ── Clés ─────────────────────────────────────────────────────────────────
 const GEMINI_KEY  = "AIzaSyBmm0uDpnppZdwWR-_Ff42rN1_It7eanqQ";
-const EBAY_APP_ID = "ETOURNEA-Cashizi-PRD-77b75c3f4-55f7796f";
+const EBAY_APP_ID = process.env.EBAY_APP_ID;
 
 // ── Headers navigateur anti-bot ──────────────────────────────────────────
 const BROWSER_HEADERS = {
