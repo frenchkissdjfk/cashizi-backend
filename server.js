@@ -112,16 +112,27 @@ async function scrapeVinted(query) {
 
 // --- DECISION ---
 async function generateDecision(productInfo, priceData) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
-    const body = {
-        contents: [{
-            parts: [{ text: `Expert vente France. Réponds UNIQUEMENT JSON: {"credible": true, "priceMin": 0, "priceMax": 0, "suggestedPrice": 0, "estimatedDays": 0, "platform": "...", "title": "...", "description": "...", "negotiationTip": "...", "photoTip": "...", "reason": null}. Data: ${productInfo.productName}, Prices: ${JSON.stringify(priceData)}` }]
-        }]
-    };
-    const resp = await axios.post(url, body, { timeout: 20000 });
-    const text = resp.data.candidates[0].content.parts[0].text;
-    return JSON.parse(text.replace(/```json|
-```/g, "").trim());
+    try {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
+        const body = {
+            contents: [{
+                parts: [{ text: `Expert vente France. Réponds UNIQUEMENT JSON: {"credible": true, "priceMin": 0, "priceMax": 0, "suggestedPrice": 0, "estimatedDays": 0, "platform": "...", "title": "...", "description": "...", "negotiationTip": "...", "photoTip": "...", "reason": null}. Data: ${productInfo.productName}, Prices: ${JSON.stringify(priceData)}` }]
+            }]
+        };
+
+        const resp = await axios.post(url, body, { timeout: 20000 });
+        
+        // On récupère le texte brut de Gemini
+        let text = resp.data.candidates[0].content.parts[0].text;
+        
+        // Nettoyage ultra-propre des balises Markdown (```json ... ```)
+        const cleaned = text.replace(/```json/g, "").replace(/```/g, "").trim();
+        
+        return JSON.parse(cleaned);
+    } catch (error) {
+        console.error("Erreur Gemini ou Parsing:", error);
+        throw error;
+    }
 }
 
 // --- ENDPOINTS ---
