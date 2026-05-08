@@ -4,10 +4,7 @@ const cheerio = require("cheerio");
 const cors = require("cors");
 const NodeCache = require("node-cache");
 
-// On n'a plus besoin du bloc "if (typeof File === 'undefined')" sur Railway !
-
 const app = express();
-// IMPORTANT : Railway définit lui-même le PORT, on doit récupérer sa variable
 const PORT = process.env.PORT || 3000; 
 
 const cache = new NodeCache({ stdTTL: 3600 });
@@ -15,8 +12,7 @@ const cache = new NodeCache({ stdTTL: 3600 });
 app.use(cors());
 app.use(express.json({ limit: "15mb" }));
 
-// ── Clés API (Optimisées pour la sécurité) ──────────────────────────────────
-// On utilise process.env pour ne pas laisser les clés "en dur" dans le code
+// ── Clés API ──────────────────────────────────
 const GEMINI_KEY = process.env.GEMINI_KEY || "AIzaSyBmm0uDpnppZdwWR-_Ff42rN1_It7eanqQ";
 const EBAY_APP_ID = process.env.EBAY_APP_ID || "ETOURNEA-Cashizi-PRD-77b75c3f4-55f7796f";
 const EBAY_CERT = process.env.EBAY_CERT || "PRD-7b75c3f4ebba-8834-4dd2-affd-98d4";
@@ -31,9 +27,9 @@ const BROWSER_HEADERS = {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// --- RECOGNITION ---
+// --- RECOGNITION (Correction Gemini 1.5 Flash Latest) ---
 async function recognizeProduct(base64Images) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_KEY}`;
     const imageParts = base64Images.slice(0, 3).map((b64) => ({
         inline_data: { mime_type: "image/jpeg", data: b64 },
     }));
@@ -110,10 +106,10 @@ async function scrapeVinted(query) {
     } catch (e) { return null; }
 }
 
-// --- DECISION ---
+// --- DECISION (Correction Gemini 1.5 Flash Latest) ---
 async function generateDecision(productInfo, priceData) {
     try {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_KEY}`;
         const body = {
             contents: [{
                 parts: [{ text: `Expert vente France. Réponds UNIQUEMENT JSON: {"credible": true, "priceMin": 0, "priceMax": 0, "suggestedPrice": 0, "estimatedDays": 0, "platform": "...", "title": "...", "description": "...", "negotiationTip": "...", "photoTip": "...", "reason": null}. Data: ${productInfo.productName}, Prices: ${JSON.stringify(priceData)}` }]
@@ -121,13 +117,9 @@ async function generateDecision(productInfo, priceData) {
         };
 
         const resp = await axios.post(url, body, { timeout: 20000 });
-        
-        // On récupère le texte brut de Gemini
         let text = resp.data.candidates[0].content.parts[0].text;
-        
-        // Nettoyage ultra-propre des balises Markdown (```json ... ```)
-        const cleaned = text.replace(/```json/g, "").replace(/```/g, "").trim();
-        
+        const cleaned = text.replace(/```json/g, "").replace(/
+```/g, "").trim();
         return JSON.parse(cleaned);
     } catch (error) {
         console.error("Erreur Gemini ou Parsing:", error);
@@ -136,7 +128,7 @@ async function generateDecision(productInfo, priceData) {
 }
 
 // --- ENDPOINTS ---
-app.get("/", (req, res) => res.send("Serveur Cashizi opérationnel !")); // Petit test pour Railway
+app.get("/", (req, res) => res.send("Serveur Cashizi opérationnel !"));
 
 app.post("/analyze", async (req, res) => {
     try {
@@ -152,5 +144,4 @@ app.post("/analyze", async (req, res) => {
     }
 });
 
-// IMPORTANT : On écoute sur 0.0.0.0 pour être visible par Railway
 app.listen(PORT, '0.0.0.0', () => console.log(`🚀 Cashizi en ligne sur le port ${PORT}`));
