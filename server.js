@@ -1,3 +1,4 @@
+// DEPLOY TEST VERSION : 11:50 - SANS REGEX
 const express = require("express");
 const axios = require("axios");
 const cheerio = require("cheerio");
@@ -41,6 +42,7 @@ async function recognizeProduct(base64Images) {
     };
     const resp = await axios.post(url, body, { timeout: 20000 });
     let text = resp.data.candidates[0].content.parts[0].text;
+    // Nettoyage ultra-robuste sans caractères spéciaux
     let clean = text.split("```json").join("").split("```").join("").trim();
     return JSON.parse(clean);
 }
@@ -109,8 +111,11 @@ async function generateDecision(productInfo, priceData) {
         };
         const resp = await axios.post(url, body, { timeout: 20000 });
         let text = resp.data.candidates[0].content.parts[0].text;
+        
+        // Méthode de nettoyage sécurisée sans slashs
         let cleaned = text.split("```json").join("").split("
 ```").join("").trim();
+        
         return JSON.parse(cleaned);
     } catch (error) {
         console.error("Erreur Gemini:", error);
