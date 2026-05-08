@@ -27,7 +27,7 @@ const BROWSER_HEADERS = {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// --- RECOGNITION (Correction Gemini 1.5 Flash Latest) ---
+// --- RECOGNITION ---
 async function recognizeProduct(base64Images) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_KEY}`;
     const imageParts = base64Images.slice(0, 3).map((b64) => ({
@@ -106,7 +106,7 @@ async function scrapeVinted(query) {
     } catch (e) { return null; }
 }
 
-// --- DECISION (Correction Gemini 1.5 Flash Latest) ---
+// --- DECISION ---
 async function generateDecision(productInfo, priceData) {
     try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_KEY}`;
@@ -118,8 +118,11 @@ async function generateDecision(productInfo, priceData) {
 
         const resp = await axios.post(url, body, { timeout: 20000 });
         let text = resp.data.candidates[0].content.parts[0].text;
+        
+        // Nettoyage sans retour à la ligne sauvage
         const cleaned = text.replace(/```json/g, "").replace(/
 ```/g, "").trim();
+        
         return JSON.parse(cleaned);
     } catch (error) {
         console.error("Erreur Gemini ou Parsing:", error);
