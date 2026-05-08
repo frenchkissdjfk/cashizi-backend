@@ -12,7 +12,6 @@ const cache = new NodeCache({ stdTTL: 3600 });
 app.use(cors());
 app.use(express.json({ limit: "15mb" }));
 
-// ── Clés API ──────────────────────────────────
 const GEMINI_KEY = process.env.GEMINI_KEY || "AIzaSyBmm0uDpnppZdwWR-_Ff42rN1_It7eanqQ";
 const EBAY_APP_ID = process.env.EBAY_APP_ID || "ETOURNEA-Cashizi-PRD-77b75c3f4-55f7796f";
 const EBAY_CERT = process.env.EBAY_CERT || "PRD-7b75c3f4ebba-8834-4dd2-affd-98d4";
@@ -27,29 +26,25 @@ const BROWSER_HEADERS = {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// --- RECOGNITION ---
 async function recognizeProduct(base64Images) {
     const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_KEY}`;
     const imageParts = base64Images.slice(0, 3).map((b64) => ({
         inline_data: { mime_type: "image/jpeg", data: b64 },
     }));
-
     const body = {
         contents: [{
             parts: [
                 ...imageParts,
-                { text: `Tu es un expert en estimation. Réponds UNIQUEMENT en JSON : {"productName": "...", "brand": "...", "model": "...", "condition": "...", "category": "...", "suggestions": [], "confidence": 0.0}` },
+                { text: 'Tu es un expert en estimation. Réponds UNIQUEMENT en JSON : {"productName": "...", "brand": "...", "model": "...", "condition": "...", "category": "...", "suggestions": [], "confidence": 0.0}' },
             ],
         }],
     };
-
     const resp = await axios.post(url, body, { timeout: 20000 });
-    const text = resp.data.candidates[0].content.parts[0].text;
-    const clean = text.replace(/```json|```/g, "").trim();
+    let text = resp.data.candidates[0].content.parts[0].text;
+    let clean = text.split("```json").join("").split("```").join("").trim();
     return JSON.parse(clean);
 }
 
-// --- EBAY ---
 let _ebayTokenCache = null;
 async function getEbayToken() {
     if (_ebayTokenCache && _ebayTokenCache.expires > Date.now()) return _ebayTokenCache.token;
@@ -74,7 +69,6 @@ async function getEbayPrices(query) {
     } catch (e) { return null; }
 }
 
-// --- LBC ---
 async function scrapeLeboncoin(query) {
     try {
         await sleep(1000);
@@ -90,7 +84,6 @@ async function scrapeLeboncoin(query) {
     } catch (e) { return null; }
 }
 
-// --- VINTED ---
 async function scrapeVinted(query) {
     try {
         await sleep(1500);
@@ -106,7 +99,6 @@ async function scrapeVinted(query) {
     } catch (e) { return null; }
 }
 
-// --- DECISION ---
 async function generateDecision(productInfo, priceData) {
     try {
         const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash-latest:generateContent?key=${GEMINI_KEY}`;
@@ -115,23 +107,18 @@ async function generateDecision(productInfo, priceData) {
                 parts: [{ text: `Expert vente France. Réponds UNIQUEMENT JSON: {"credible": true, "priceMin": 0, "priceMax": 0, "suggestedPrice": 0, "estimatedDays": 0, "platform": "...", "title": "...", "description": "...", "negotiationTip": "...", "photoTip": "...", "reason": null}. Data: ${productInfo.productName}, Prices: ${JSON.stringify(priceData)}` }]
             }]
         };
-
         const resp = await axios.post(url, body, { timeout: 20000 });
         let text = resp.data.candidates[0].content.parts[0].text;
-        
-        // Nettoyage sans retour à la ligne sauvage
-        const cleaned = text.replace(/```json/g, "").replace(/
-```/g, "").trim();
-        
+        let cleaned = text.split("```json").join("").split("
+```").join("").trim();
         return JSON.parse(cleaned);
     } catch (error) {
-        console.error("Erreur Gemini ou Parsing:", error);
+        console.error("Erreur Gemini:", error);
         throw error;
     }
 }
 
-// --- ENDPOINTS ---
-app.get("/", (req, res) => res.send("Serveur Cashizi opérationnel !"));
+app.get("/", (req, res) => res.send("Cashizi Live"));
 
 app.post("/analyze", async (req, res) => {
     try {
@@ -142,7 +129,6 @@ app.post("/analyze", async (req, res) => {
         const decision = await generateDecision(productInfo, { ebay, lbc, vinted });
         res.json({ ...decision, productName: productInfo.productName });
     } catch (err) {
-        console.error("Erreur Backend:", err);
         res.status(500).json({ error: err.message });
     }
 });
