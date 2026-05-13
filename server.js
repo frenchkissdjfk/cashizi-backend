@@ -384,6 +384,20 @@ setInterval(async () => {
   } catch (_) {}
 }, 14 * 60 * 1000);
 
+// ── Route debug modèles Gemini
+app.get("/models", async (_, res) => {
+  try {
+    const r = await axios.get(
+      `https://generativelanguage.googleapis.com/v1/models?key=${GEMINI_KEY}`
+    );
+
+    res.json(r.data);
+  } catch (e) {
+    console.error(e.response?.data || e.message);
+    res.status(500).json(e.response?.data || e.message);
+  }
+});
+
 app.listen(PORT, () =>
   console.log(`🚀 Cashizi backend — port ${PORT} — ${new Date().toISOString()}`)
 );
