@@ -1,403 +1,245 @@
-// ═══════════════════════════════════════════════════════════════════════
-//  CASHIZI — Backend production
-//  Déploiement : Render (https://cashizi-backend.onrender.com)
-//  Port        : 10000 (requis par Render)
-//  Modèle IA   : gemini-2.0-flash (alias "latest")
-//
-//  Variables d'environnement à configurer dans Render :
-//    GEMINI_KEY   → votre clé Gemini API
-//    EBAY_APP_ID  → App ID eBay
-//    EBAY_CERT    → Cert ID eBay
-// ═══════════════════════════════════════════════════════════════════════
-
-import express   from "express";
-import axios     from "axios";
+import express from "express";
+import axios from "axios";
 import * as cheerio from "cheerio";
-import cors      from "cors";
+import cors from "cors";
 import NodeCache from "node-cache";
 
-const app   = express();
-const PORT  = process.env.PORT || 10000;
+const app = express();
+const PORT = process.env.PORT || 10000;
 const cache = new NodeCache({ stdTTL: 3600 });
 
-// ── CORS : autorise uniquement les appels légitimes ───────────────────
-app.use(cors({
-  origin: "*", // En prod vous pouvez restreindre à votre domaine Flutter
-  methods: ["GET", "POST"],
-}));
+app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
 app.use(express.json({ limit: "15mb" }));
 
-// ── Variables d'environnement (jamais en dur) ─────────────────────────
-const GEMINI_KEY  = process.env.GEMINI_KEY;
+const GEMINI_KEY = process.env.GEMINI_KEY;
 const EBAY_APP_ID = process.env.EBAY_APP_ID;
-const EBAY_CERT   = process.env.EBAY_CERT;
+const EBAY_CERT = process.env.EBAY_CERT;
 
-// Vérifie les clés au démarrage
 if (!GEMINI_KEY) {
-  console.error("❌ GEMINI_KEY manquante — ajoutez-la dans les variables Render");
+  console.error("❌ GEMINI_KEY manquante");
   process.exit(1);
 }
 
-const BROWSER_HEADERS = {
-  "User-Agent":
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) " +
-    "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
-  "Accept-Language": "fr-FR,fr;q=0.9",
-  "Accept":
-    "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-  "Accept-Encoding": "gzip, deflate, br",
-  "Connection": "keep-alive",
-};
+/* =========================
+   🔥 GEMINI ROBUST CALLER
+========================= */
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const GEMINI_MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-2.0-flash"
+];
 
-// ════════════════════════════════════════════════════════════════════════
-//  STEP 1 — Gemini Flash (latest) Vision : reconnaissance produit
-// ════════════════════════════════════════════════════════════════════════
-async function recognizeProduct(base64Images) {
-  // gemini-2.0-flash-latest = modèle le plus récent et le plus rapide
-  const model = "gemini-2.5-flash";
-  const url   = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_KEY}`;
+async function sleep(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
 
-  const imageParts = base64Images.slice(0, 3).map((b64) => ({
-    inline_data: { mime_type: "image/jpeg", data: b64 },
+async function callGemini(payload) {
+  for (const model of GEMINI_MODELS) {
+    const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_KEY}`;
+
+    try {
+      const res = await axios.post(url, payload, {
+        timeout: 30000,
+        headers: { "Content-Type": "application/json" }
+      });
+
+      return res.data;
+    } catch (e) {
+      const status = e.response?.status;
+
+      console.warn(`⚠️ Gemini fail ${model} (${status})`);
+
+      // 503 = overload → retry léger
+      if (status === 503) {
+        await sleep(800);
+        continue;
+      }
+
+      // 404 model → skip
+      continue;
+    }
+  }
+
+  throw new Error("Tous les modèles Gemini ont échoué");
+}
+
+/* =========================
+   🧠 VISION PRODUCT
+========================= */
+
+async function recognizeProduct(images) {
+  const imageParts = images.slice(0, 3).map(b64 => ({
+    inline_data: { mime_type: "image/jpeg", data: b64 }
   }));
 
-  const body = {
+  const payload = {
     contents: [{
       parts: [
         ...imageParts,
         {
-          text: `Tu es un expert en estimation de produits d'occasion en France.
-Analyse ces photos (jusqu'à 3 angles du même objet) et réponds UNIQUEMENT en JSON valide, sans markdown ni backticks.
-Format attendu :
+          text: `
+Analyse ces images produit.
+
+Réponds UNIQUEMENT en JSON :
 {
-  "productName": "nom précis du produit",
-  "brand": "marque si visible sinon null",
-  "model": "modèle si visible sinon null",
-  "condition": "excellent|bon|passable|mauvais",
-  "category": "catégorie principale",
-  "suggestions": ["variante 1", "variante 2", "variante 3"],
-  "confidence": 0.95
-}`,
-        },
-      ],
+ "productName": "",
+ "brand": null,
+ "model": null,
+ "condition": "excellent|bon|passable|mauvais",
+ "category": "",
+ "confidence": 0.0
+}
+`
+        }
+      ]
     }],
     generationConfig: {
       temperature: 0.2,
-      maxOutputTokens: 512,
-    },
-  };
-
-  const resp  = await axios.post(url, body, {
-    headers: { "Content-Type": "application/json" },
-    timeout: 25000,
-  });
-  const text  = resp.data.candidates[0].content.parts[0].text;
-  const clean = text.replace(/```json|```/g, "").trim();
-  return JSON.parse(clean);
-}
-
-// ════════════════════════════════════════════════════════════════════════
-//  STEP 2A — eBay API : prix marché réels
-// ════════════════════════════════════════════════════════════════════════
-let _ebayTokenCache = null;
-
-async function getEbayToken() {
-  if (_ebayTokenCache && _ebayTokenCache.expires > Date.now()) {
-    return _ebayTokenCache.token;
-  }
-  if (!EBAY_APP_ID || !EBAY_CERT) {
-    throw new Error("EBAY_APP_ID ou EBAY_CERT manquant");
-  }
-  const creds = Buffer.from(`${EBAY_APP_ID}:${EBAY_CERT}`).toString("base64");
-  const resp  = await axios.post(
-    "https://api.ebay.com/identity/v1/oauth2/token",
-    "grant_type=client_credentials&scope=https%3A%2F%2Fapi.ebay.com%2Foauth%2Fapi_scope",
-    {
-      headers: {
-        Authorization: `Basic ${creds}`,
-        "Content-Type": "application/x-www-form-urlencoded",
-      },
-      timeout: 10000,
+      maxOutputTokens: 512
     }
-  );
-  _ebayTokenCache = {
-    token:   resp.data.access_token,
-    expires: Date.now() + resp.data.expires_in * 1000 - 60000,
   };
-  return _ebayTokenCache.token;
+
+  const data = await callGemini(payload);
+  const text = data.candidates[0].content.parts[0].text;
+
+  return JSON.parse(text.replace(/```json|```/g, "").trim());
 }
+
+/* =========================
+   💰 EBAY (REAL PRICE)
+========================= */
 
 async function getEbayPrices(query) {
-  const key    = `ebay_${query}`;
-  const cached = cache.get(key);
+  const cacheKey = `ebay_${query}`;
+  const cached = cache.get(cacheKey);
   if (cached) return cached;
+
   try {
-    const token = await getEbayToken();
-    const resp  = await axios.get(
+    const tokenRes = await axios.post(
+      "https://api.ebay.com/identity/v1/oauth2/token",
+      "grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope",
+      {
+        headers: {
+          Authorization: `Basic ${Buffer.from(`${EBAY_APP_ID}:${EBAY_CERT}`).toString("base64")}`,
+          "Content-Type": "application/x-www-form-urlencoded"
+        }
+      }
+    );
+
+    const token = tokenRes.data.access_token;
+
+    const res = await axios.get(
       "https://api.ebay.com/buy/browse/v1/item_summary/search",
       {
-        params: {
-          q: query,
-          filter: "conditionIds:{1000|1500|2000|2500|3000},buyingOptions:{FIXED_PRICE}",
-          sort: "price", limit: 20,
-        },
+        params: { q: query, limit: 20 },
         headers: {
           Authorization: `Bearer ${token}`,
-          "Content-Type": "application/json",
-          "X-EBAY-C-MARKETPLACE-ID": "EBAY_FR",
-        },
-        timeout: 10000,
+          "X-EBAY-C-MARKETPLACE-ID": "EBAY_FR"
+        }
       }
     );
-    const items  = resp.data.itemSummaries || [];
-    const prices = items
-      .map((i) => parseFloat(i.price?.value || 0))
-      .filter((p) => p > 0)
+
+    const prices = (res.data.itemSummaries || [])
+      .map(i => Number(i.price?.value))
+      .filter(Boolean)
       .sort((a, b) => a - b);
-    if (!prices.length) return null;
-    const q1     = prices[Math.floor(prices.length * 0.25)];
-    const q3     = prices[Math.floor(prices.length * 0.75)];
-    const result = { min: Math.round(q1), max: Math.round(q3), count: prices.length };
-    cache.set(key, result);
-    return result;
-  } catch (e) {
-    console.warn("eBay error:", e.message);
-    return null;
-  }
-}
 
-// ════════════════════════════════════════════════════════════════════════
-//  STEP 2B — Scraping Leboncoin
-// ════════════════════════════════════════════════════════════════════════
-async function scrapeLeboncoin(query) {
-  const key    = `lbc_${query}`;
-  const cached = cache.get(key);
-  if (cached) return cached;
-  try {
-    await sleep(1200);
-    const url = `https://www.leboncoin.fr/recherche?text=${encodeURIComponent(query)}&sort=time&order=desc`;
-    const { data } = await axios.get(url, {
-      headers: BROWSER_HEADERS,
-      timeout: 12000,
-    });
-    const $      = cheerio.load(data);
-    const prices = [];
-    $("[data-qa-id='aditem_container']").each((_, el) => {
-      const txt   = $(el).find("[data-qa-id='aditem_price']").text().trim();
-      const match = txt.match(/[\d\s]+/);
-      if (match) {
-        const p = parseInt(match[0].replace(/\s/g, ""), 10);
-        if (p > 0 && p < 50000) prices.push(p);
-      }
-    });
     if (!prices.length) return null;
-    prices.sort((a, b) => a - b);
-    const mid    = prices.slice(
-      Math.floor(prices.length * 0.2),
-      Math.floor(prices.length * 0.8)
-    );
-    if (!mid.length) return null;
-    const avg    = Math.round(mid.reduce((a, b) => a + b, 0) / mid.length);
+
     const result = {
-      min: mid[0], max: mid[mid.length - 1], avg, count: prices.length,
+      min: prices[Math.floor(prices.length * 0.25)],
+      max: prices[Math.floor(prices.length * 0.75)],
+      count: prices.length
     };
-    cache.set(key, result);
+
+    cache.set(cacheKey, result);
     return result;
-  } catch (e) {
-    console.warn("LBC error:", e.message);
+
+  } catch {
     return null;
   }
 }
 
-// ════════════════════════════════════════════════════════════════════════
-//  STEP 2C — Scraping Vinted
-// ════════════════════════════════════════════════════════════════════════
-async function scrapeVinted(query) {
-  const key    = `vinted_${query}`;
-  const cached = cache.get(key);
-  if (cached) return cached;
-  try {
-    await sleep(1800);
-    const url = `https://www.vinted.fr/catalog?search_text=${encodeURIComponent(query)}&order=newest_first`;
-    const { data } = await axios.get(url, {
-      headers: { ...BROWSER_HEADERS, Referer: "https://www.vinted.fr/" },
-      timeout: 12000,
-    });
-    const $      = cheerio.load(data);
-    const prices = [];
-    $("[data-testid='item-price'], [class*='price']").each((_, el) => {
-      const txt = $(el).text().replace(/[^\d,\.]/g, "").replace(",", ".");
-      const p   = parseFloat(txt);
-      if (p > 0 && p < 50000) prices.push(Math.round(p));
-    });
-    if (!prices.length) return null;
-    prices.sort((a, b) => a - b);
-    const mid    = prices.slice(
-      Math.floor(prices.length * 0.2),
-      Math.floor(prices.length * 0.8)
-    );
-    if (!mid.length) return null;
-    const avg    = Math.round(mid.reduce((a, b) => a + b, 0) / mid.length);
-    const result = {
-      min: mid[0], max: mid[mid.length - 1], avg, count: prices.length,
-    };
-    cache.set(key, result);
-    return result;
-  } catch (e) {
-    console.warn("Vinted error:", e.message);
-    return null;
-  }
-}
+/* =========================
+   🧠 DECISION AI (ANNONCE)
+========================= */
 
-// ════════════════════════════════════════════════════════════════════════
-//  STEP 3 — Gemini Flash : décision + génération annonce complète
-// ════════════════════════════════════════════════════════════════════════
-async function generateDecision(productInfo, priceData) {
-  const model = "gemini-2.5-flash";
-  const url   = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_KEY}`;
-
-  const body = {
+async function generateListing(product, prices) {
+  const payload = {
     contents: [{
       parts: [{
-        text: `Tu es un expert en vente d'objets d'occasion en France.
-Réponds UNIQUEMENT en JSON valide, sans markdown ni backticks.
+        text: `
+Produit: ${product.productName}
+Marque: ${product.brand || "unknown"}
 
-Produit     : ${productInfo.productName}
-Marque      : ${productInfo.brand || "inconnue"}
-Modèle      : ${productInfo.model || "inconnu"}
-État estimé : ${productInfo.condition}
-Prix marché : ${JSON.stringify({
-  ebay:      priceData.ebay,
-  leboncoin: priceData.lbc,
-  vinted:    priceData.vinted,
-})}
+Prix marché:
+${JSON.stringify(prices)}
 
-Règles de décision :
-• credible = false  si prix médian toutes sources < 15 € OU si estimatedDays > 50
-• credible = true   sinon
-
-Format JSON attendu (respecte-le exactement) :
+Réponds JSON:
 {
-  "credible": true,
-  "priceMin": 35,
-  "priceMax": 45,
-  "suggestedPrice": 42,
-  "estimatedDays": 17,
-  "platform": "Leboncoin",
-  "title": "Titre prêt à copier-coller (max 70 caractères)",
-  "description": "Description complète prête à coller (3-5 phrases naturelles, ton vendeur français)",
-  "negotiationTip": "Conseil de négociation personnalisé (1-2 phrases)",
-  "photoTip": "Conseil photo pratique pour cette catégorie (1-2 phrases)",
-  "reason": "Explication courte si pas crédible, sinon null"
-}`,
-      }],
-    }],
-    generationConfig: {
-      temperature: 0.3,
-      maxOutputTokens: 1024,
-    },
+ "priceMin": 0,
+ "priceMax": 0,
+ "suggestedPrice": 0,
+ "estimatedDays": 0,
+ "title": "",
+ "description": "",
+ "platform": "Leboncoin",
+ "confidence": 0.0
+}
+`
+      }]
+    }]
   };
 
-  const resp  = await axios.post(url, body, {
-    headers: { "Content-Type": "application/json" },
-    timeout: 25000,
-  });
-  const text  = resp.data.candidates[0].content.parts[0].text;
-  const clean = text.replace(/```json|```/g, "").trim();
-  return JSON.parse(clean);
+  const data = await callGemini(payload);
+  const text = data.candidates[0].content.parts[0].text;
+
+  return JSON.parse(text.replace(/```json|```/g, "").trim());
 }
 
-// ════════════════════════════════════════════════════════════════════════
-//  ENDPOINT PRINCIPAL  POST /analyze
-//  Body JSON : { "images": ["base64...", "base64...", "base64..."] }
-// ════════════════════════════════════════════════════════════════════════
+/* =========================
+   🚀 MAIN ROUTE
+========================= */
+
 app.post("/analyze", async (req, res) => {
-  const start = Date.now();
   try {
     const { images } = req.body;
-    if (!images || !Array.isArray(images) || images.length === 0) {
-      return res.status(400).json({ error: "images manquantes ou invalides" });
+    if (!images?.length) {
+      return res.status(400).json({ error: "no images" });
     }
 
-    console.log(`[${new Date().toISOString()}] 📸 Analyse — ${images.length} photo(s)`);
+    console.log("📸 analyse...");
 
-    // 1. Reconnaissance produit via Gemini Vision
-    const productInfo = await recognizeProduct(images);
-    console.log(`  ✅ Produit : ${productInfo.productName} (confiance : ${productInfo.confidence})`);
+    const product = await recognizeProduct(images);
 
-    const query = [productInfo.brand, productInfo.productName]
-      .filter(Boolean).join(" ");
+    const query = product.productName;
 
-    // 2. Collecte des prix en parallèle
-    const [ebay, lbc, vinted] = await Promise.all([
-      getEbayPrices(query),
-      scrapeLeboncoin(query),
-      scrapeVinted(query),
-    ]);
-    console.log(`  💰 eBay: ${JSON.stringify(ebay)} | LBC: ${JSON.stringify(lbc)} | Vinted: ${JSON.stringify(vinted)}`);
+    const prices = await getEbayPrices(query);
 
-    // 3. Décision + génération annonce via Gemini text
-    const decision = await generateDecision(productInfo, { ebay, lbc, vinted });
-    console.log(`  🧠 ${decision.credible ? "CRÉDIBLE ✅" : "PAS CRÉDIBLE ❌"} — ${Date.now() - start}ms`);
+    const listing = await generateListing(product, prices);
 
-    res.json({
-      credible:       decision.credible,
-      productName:    productInfo.productName,
-      brand:          productInfo.brand    || null,
-      condition:      productInfo.condition || null,
-      suggestions:    productInfo.suggestions || [],
-      priceRange:     `${decision.priceMin} € – ${decision.priceMax} €`,
-      suggestedPrice: `${decision.suggestedPrice} €`,
-      timeRange:      `~${decision.estimatedDays} jours`,
-      platform:       decision.platform,
-      title:          decision.title,
-      description:    decision.description,
-      negotiationTip: decision.negotiationTip,
-      photoTip:       decision.photoTip,
-      reason:         decision.reason || null,
+    return res.json({
+      product,
+      prices,
+      listing,
+      status: "success"
     });
-  } catch (err) {
 
-    console.error("❌ ERREUR COMPLETE GEMINI:");
-    console.error(err.response?.data || err.message);
-  
-    res.status(500).json({
-      error: err.response?.data || err.message
-    });
-  }
-});
-
-// ── Health check (Render l'utilise pour vérifier que le service tourne)
-app.get("/health", (_, res) => res.json({ status: "ok", ts: Date.now() }));
-
-// ── Keep-alive : Render met le service en veille après 15min sur le plan
-//   gratuit. Ce ping toutes les 14min évite le cold start.
-//   Désactivez si vous passez sur un plan payant Render.
-setInterval(async () => {
-  try {
-    await axios.get("https://cashizi-backend.onrender.com/health", {
-      timeout: 5000,
-    });
-    console.log(`[${new Date().toISOString()}] 🏓 keep-alive ok`);
-  } catch (_) {}
-}, 14 * 60 * 1000);
-
-// ── Route debug modèles Gemini
-app.get("/models", async (_, res) => {
-  try {
-    const r = await axios.get(
-      `https://generativelanguage.googleapis.com/v1/models?key=${GEMINI_KEY}`
-    );
-
-    res.json(r.data);
   } catch (e) {
-    console.error(e.response?.data || e.message);
-    res.status(500).json(e.response?.data || e.message);
+    console.error("❌ CRASH:", e.message);
+    res.status(500).json({ error: e.message });
   }
 });
 
-app.listen(PORT, () =>
-  console.log(`🚀 Cashizi backend — port ${PORT} — ${new Date().toISOString()}`)
-);
+/* =========================
+   HEALTH
+========================= */
+
+app.get("/health", (_, res) => {
+  res.json({ ok: true });
+});
+
+app.listen(PORT, () => {
+  console.log("🚀 backend ready on", PORT);
+});
