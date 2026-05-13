@@ -2,6 +2,7 @@ import express from "express";
 import axios from "axios";
 import cors from "cors";
 import NodeCache from "node-cache";
+import * as cheerio from "cheerio";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -14,124 +15,101 @@ const GEMINI_KEY = process.env.GEMINI_KEY;
 const EBAY_APP_ID = process.env.EBAY_APP_ID;
 const EBAY_CERT = process.env.EBAY_CERT;
 
-if (!GEMINI_KEY) {
-  console.error("❌ GEMINI_KEY manquante");
-  process.exit(1);
-}
-
 /* =========================
-   🧠 SAFE JSON PARSER (IMPORTANT)
+   SAFE JSON
 ========================= */
 
-function safeJSONParse(text) {
+function safeJSON(text) {
   try {
     return JSON.parse(text);
-  } catch (e) {
-    const cleaned = text
-      .replace(/```json|```/g, "")
-      .replace(/\n/g, " ")
-      .trim();
+  } catch {}
 
-    const match = cleaned.match(/\{.*\}/s);
-    if (!match) throw e;
+  const match = text?.match(/\{[\s\S]*\}/);
+  if (!match) return {};
 
+  try {
     return JSON.parse(match[0]);
+  } catch {
+    return {};
   }
 }
 
 /* =========================
-   🔥 GEMINI CALLER ULTRA ROBUST
+   GEMINI CALL
 ========================= */
 
-const GEMINI_MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite"
-];
+const MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
 
-async function sleep(ms) {
-  return new Promise(r => setTimeout(r, ms));
-}
+const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 async function callGemini(payload) {
-  for (const model of GEMINI_MODELS) {
+  for (const model of MODELS) {
     const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_KEY}`;
 
     try {
-      const res = await axios.post(url, payload, {
-        timeout: 30000,
-        headers: { "Content-Type": "application/json" }
-      });
-
+      const res = await axios.post(url, payload, { timeout: 30000 });
       return res.data;
-
     } catch (e) {
-      const status = e.response?.status;
-
-      console.warn(`⚠️ Gemini fail ${model} (${status})`);
-
-      if (status === 503) {
+      if (e.response?.status === 503) {
         await sleep(800);
         continue;
       }
-
-      continue;
     }
   }
-
-  throw new Error("Gemini indisponible");
+  return null;
 }
 
 /* =========================
-   🧠 VISION
+   OBJECT RECOGNITION (UNIVERSAL)
 ========================= */
 
-async function recognizeProduct(images) {
-  const imageParts = images.slice(0, 3).map(b64 => ({
+async function recognizeObject(images) {
+  const parts = images.slice(0, 3).map(b64 => ({
     inline_data: { mime_type: "image/jpeg", data: b64 }
   }));
 
   const payload = {
     contents: [{
       parts: [
-        ...imageParts,
+        ...parts,
         {
           text: `
-Retourne UNIQUEMENT un JSON valide:
+Tu identifies tout objet visible (très important).
 
+Retour JSON:
 {
- "productName": "",
- "brand": null,
- "model": null,
- "condition": "excellent|bon|passable|mauvais",
+ "objectName": "",
  "category": "",
  "confidence": 0.0
 }
 
-Aucun texte, aucun markdown.
+Règles:
+- jamais unknown
+- toujours une hypothèse réaliste
 `
         }
       ]
-    }],
-    generationConfig: {
-      temperature: 0.2,
-      maxOutputTokens: 512
-    }
+    }]
   };
 
   const data = await callGemini(payload);
 
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
-  return safeJSONParse(text);
+  const obj = safeJSON(text);
+
+  return obj.objectName
+    ? obj
+    : { objectName: "Objet générique", category: "general", confidence: 0.3 };
 }
 
 /* =========================
-   💰 EBAY PRICES
+   EBAY PRICES (API OFFICIELLE)
 ========================= */
 
 async function getEbayPrices(query) {
-  const cacheKey = `ebay_${query}`;
-  const cached = cache.get(cacheKey);
+  const key = `ebay_${query}`;
+  const cached = cache.get(key);
   if (cached) return cached;
 
   try {
@@ -140,9 +118,7 @@ async function getEbayPrices(query) {
       "grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope",
       {
         headers: {
-          Authorization: `Basic ${Buffer.from(
-            `${EBAY_APP_ID}:${EBAY_CERT}`
-          ).toString("base64")}`,
+          Authorization: `Basic ${Buffer.from(`${EBAY_APP_ID}:${EBAY_CERT}`).toString("base64")}`,
           "Content-Type": "application/x-www-form-urlencoded"
         }
       }
@@ -168,14 +144,11 @@ async function getEbayPrices(query) {
 
     if (!prices.length) return null;
 
-    const result = {
+    return {
       min: prices[Math.floor(prices.length * 0.25)],
       max: prices[Math.floor(prices.length * 0.75)],
-      count: prices.length
+      source: "ebay"
     };
-
-    cache.set(cacheKey, result);
-    return result;
 
   } catch {
     return null;
@@ -183,44 +156,100 @@ async function getEbayPrices(query) {
 }
 
 /* =========================
-   🧠 LISTING AI
+   LEBONCOIN SCRAPING
 ========================= */
 
-async function generateListing(product, prices) {
-  const payload = {
-    contents: [{
-      parts: [{
-        text: `
-Produit: ${product.productName}
-Marque: ${product.brand || "unknown"}
+async function getLeboncoinPrices(query) {
+  try {
+    const url = `https://www.leboncoin.fr/recherche?text=${encodeURIComponent(query)}`;
 
-Prix marché:
-${JSON.stringify(prices)}
+    const { data } = await axios.get(url, {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
 
-Retour JSON strict:
-{
- "priceMin": 0,
- "priceMax": 0,
- "suggestedPrice": 0,
- "estimatedDays": 0,
- "title": "",
- "description": "",
- "platform": "Leboncoin",
- "confidence": 0.0
-}
-`
-      }]
-    }]
-  };
+    const $ = cheerio.load(data);
+    const prices = [];
 
-  const data = await callGemini(payload);
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
+    $("[data-qa-id='aditem_price']").each((_, el) => {
+      const txt = $(el).text().replace(/[^\d]/g, "");
+      const p = parseInt(txt);
+      if (p > 0) prices.push(p);
+    });
 
-  return safeJSONParse(text);
+    if (!prices.length) return null;
+
+    prices.sort((a,b)=>a-b);
+
+    return {
+      min: prices[Math.floor(prices.length * 0.2)],
+      max: prices[Math.floor(prices.length * 0.8)],
+      source: "lbc"
+    };
+
+  } catch {
+    return null;
+  }
 }
 
 /* =========================
-   🚀 MAIN ROUTE (STABLE)
+   VINTED SCRAPING
+========================= */
+
+async function getVintedPrices(query) {
+  try {
+    const url = `https://www.vinted.fr/catalog?search_text=${encodeURIComponent(query)}`;
+
+    const { data } = await axios.get(url, {
+      headers: { "User-Agent": "Mozilla/5.0" }
+    });
+
+    const $ = cheerio.load(data);
+    const prices = [];
+
+    $("[class*='price']").each((_, el) => {
+      const txt = $(el).text().replace(/[^\d]/g, "");
+      const p = parseInt(txt);
+      if (p > 0) prices.push(p);
+    });
+
+    if (!prices.length) return null;
+
+    prices.sort((a,b)=>a-b);
+
+    return {
+      min: prices[Math.floor(prices.length * 0.2)],
+      max: prices[Math.floor(prices.length * 0.8)],
+      source: "vinted"
+    };
+
+  } catch {
+    return null;
+  }
+}
+
+/* =========================
+   HYBRID PRICE ENGINE (IMPORTANT)
+========================= */
+
+function mergePrices(prices) {
+  const valid = prices.filter(Boolean);
+
+  if (!valid.length) {
+    return { min: 5, max: 30, source: "fallback" };
+  }
+
+  const mins = valid.map(p => p.min);
+  const maxs = valid.map(p => p.max);
+
+  return {
+    min: Math.round(Math.min(...mins)),
+    max: Math.round(Math.max(...maxs)),
+    sources: valid.map(p => p.source)
+  };
+}
+
+/* =========================
+   MAIN ROUTE
 ========================= */
 
 app.post("/analyze", async (req, res) => {
@@ -231,54 +260,54 @@ app.post("/analyze", async (req, res) => {
       return res.status(400).json({ error: "no images" });
     }
 
-    console.log("📸 analyse...");
+    console.log("📸 analyze hybrid");
 
-    // 1. vision
-    let product;
-    try {
-      product = await recognizeProduct(images);
-    } catch (e) {
-      product = {
-        productName: "objet inconnu",
-        brand: null,
-        condition: "bon",
-        confidence: 0.3
-      };
-    }
+    // 1. OBJECT
+    const object = await recognizeObject(images);
 
-    // 2. prix
-    const prices = await getEbayPrices(product.productName);
+    const query = object.objectName;
 
-    // 3. listing
-    let listing;
-    try {
-      listing = await generateListing(product, prices);
-    } catch (e) {
-      listing = {
-        priceMin: 10,
-        priceMax: 30,
-        suggestedPrice: 20,
-        estimatedDays: 10,
-        title: product.productName,
-        description: "Produit en bon état, idéal pour usage quotidien.",
-        platform: "Leboncoin",
-        confidence: 0.5
-      };
-    }
+    // 2. PARALLEL PRICING (IMPORTANT PERF)
+    const [ebay, lbc, vinted] = await Promise.all([
+      getEbayPrices(query),
+      getLeboncoinPrices(query),
+      getVintedPrices(query)
+    ]);
+
+    // 3. MERGE PRICES
+    const priceRange = mergePrices([ebay, lbc, vinted]);
+
+    // 4. LISTING SIMPLE (STABLE)
+    const listing = {
+      title: object.objectName,
+      description: "Objet en bon état. Fonctionnel.",
+      priceMin: priceRange.min,
+      priceMax: priceRange.max,
+      suggestedPrice: Math.round((priceRange.min + priceRange.max) / 2),
+      estimatedDays: 7,
+      platform: "Leboncoin"
+    };
 
     return res.json({
-      product,
-      prices,
+      object,
+      prices: { ebay, lbc, vinted, merged: priceRange },
       listing,
       status: "success"
     });
 
   } catch (e) {
-    console.error("❌ CRASH GLOBAL:", e.message);
+    console.error("CRASH:", e.message);
 
-    return res.status(500).json({
-      error: "backend_error",
-      message: e.message
+    return res.json({
+      object: { objectName: "Objet générique", category: "general" },
+      prices: { merged: { min: 5, max: 30 } },
+      listing: {
+        title: "Objet",
+        priceMin: 5,
+        priceMax: 30,
+        description: "Estimation approximative"
+      },
+      status: "fallback"
     });
   }
 });
@@ -292,5 +321,5 @@ app.get("/health", (_, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log("🚀 Cashizi backend stable on port", PORT);
+  console.log("🚀 HYBRID OBJECT AI READY");
 });
