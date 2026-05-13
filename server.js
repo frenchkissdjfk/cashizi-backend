@@ -313,10 +313,6 @@ Format JSON attendu (respecte-le exactement) :
 //  ENDPOINT PRINCIPAL  POST /analyze
 //  Body JSON : { "images": ["base64...", "base64...", "base64..."] }
 // ════════════════════════════════════════════════════════════════════════
-app.use((req, res, next) => {
-  console.log(`[${new Date().toISOString()}] ${req.method} ${req.url}`);
-  next();
-});
 app.post("/analyze", async (req, res) => {
   const start = Date.now();
   try {
