@@ -359,8 +359,13 @@ app.post("/analyze", async (req, res) => {
       reason:         decision.reason || null,
     });
   } catch (err) {
-    console.error(`[${new Date().toISOString()}] ❌ /analyze : ${err.message}`);
-    res.status(500).json({ error: err.message });
+
+    console.error("❌ ERREUR COMPLETE GEMINI:");
+    console.error(err.response?.data || err.message);
+  
+    res.status(500).json({
+      error: err.response?.data || err.message
+    });
   }
 });
 
