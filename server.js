@@ -57,7 +57,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 async function recognizeProduct(base64Images) {
   // gemini-2.0-flash-latest = modèle le plus récent et le plus rapide
   const model = "gemini-1.5-flash";
-  const url   = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`;
+  const url   = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_KEY}`;
 
   const imageParts = base64Images.slice(0, 3).map((b64) => ({
     inline_data: { mime_type: "image/jpeg", data: b64 },
@@ -256,7 +256,7 @@ async function scrapeVinted(query) {
 // ════════════════════════════════════════════════════════════════════════
 async function generateDecision(productInfo, priceData) {
   const model = "gemini-1.5-flash";
-  const url   = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`;
+  const url   = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_KEY}`;
 
   const body = {
     contents: [{
