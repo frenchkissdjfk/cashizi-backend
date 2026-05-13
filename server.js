@@ -56,7 +56,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ════════════════════════════════════════════════════════════════════════
 async function recognizeProduct(base64Images) {
   // gemini-2.0-flash-latest = modèle le plus récent et le plus rapide
-  const model = "gemini-2.0-flash";
+  const model = "gemini-2.5-flash";
   const url   = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_KEY}`;
 
   const imageParts = base64Images.slice(0, 3).map((b64) => ({
@@ -255,7 +255,7 @@ async function scrapeVinted(query) {
 //  STEP 3 — Gemini Flash : décision + génération annonce complète
 // ════════════════════════════════════════════════════════════════════════
 async function generateDecision(productInfo, priceData) {
-  const model = "gemini-2.0-flash";
+  const model = "gemini-2.5-flash";
   const url   = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_KEY}`;
 
   const body = {
