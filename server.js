@@ -3,6 +3,7 @@ import axios from "axios";
 import cors from "cors";
 import NodeCache from "node-cache";
 import * as cheerio from "cheerio";
+import Tesseract from "tesseract.js";
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -20,7 +21,6 @@ const EBAY_CERT = process.env.EBAY_CERT;
 ========================= */
 
 function safeJSON(text) {
-
   if (!text) return null;
 
   try {
@@ -55,43 +55,52 @@ function safeJSON(text) {
    GEMINI CALL
 ========================= */
 
-const MODELS = [
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite"
-];
+const MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 async function callGemini(payload) {
-
   for (const model of MODELS) {
-
     const url =
       `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_KEY}`;
 
     try {
-
       const res = await axios.post(url, payload, {
         timeout: 30000,
-        headers: {
-          "Content-Type": "application/json"
-        }
+        headers: { "Content-Type": "application/json" }
       });
 
       return res.data;
-
     } catch (e) {
-
       console.log("⚠️ GEMINI FAIL:", model);
-
       if (e.response?.status === 503) {
         await sleep(1000);
         continue;
       }
     }
   }
-
   return null;
+}
+
+/* =========================
+   OCR (TESSERACT)
+========================= */
+
+async function runOCR(images) {
+  try {
+    const results = await Promise.all(
+      images.slice(0, 2).map(async (img) => {
+        const res = await Tesseract.recognize(img, "eng+fra", {
+          logger: () => {}
+        });
+        return res.data.text || "";
+      })
+    );
+
+    return results.join(" ");
+  } catch {
+    return "";
+  }
 }
 
 /* =========================
@@ -99,7 +108,6 @@ async function callGemini(payload) {
 ========================= */
 
 async function recognizeObject(images) {
-
   const parts = images.slice(0, 3).map(b64 => ({
     inline_data: {
       mime_type: "image/jpeg",
@@ -115,20 +123,7 @@ async function recognizeObject(images) {
           text: `
 Tu es un expert mondial de reconnaissance d’objets d’occasion.
 
-Analyse les photos.
-
-IMPORTANT :
-- ne jamais répondre "unknown"
-- ne jamais répondre "objet inconnu"
-- toujours donner l’objet le PLUS PROBABLE
-- utiliser forme, logo, couleurs, design, matière
-- si électronique → essayer marque/modèle
-- si vêtement → type exact
-- si meuble → type précis
-- si accessoire → catégorie précise
-
 Retour JSON STRICT :
-
 {
   "objectName": "",
   "category": "",
@@ -136,8 +131,6 @@ Retour JSON STRICT :
   "model": "",
   "confidence": 0.0
 }
-
-AUCUN markdown.
 `
         }
       ]
@@ -150,19 +143,14 @@ AUCUN markdown.
 
   const data = await callGemini(payload);
 
-  const text =
-    data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
   console.log("VISION RAW:", text);
 
-  // FALLBACK SI TEXTE TRONQUÉ
-  if (
-    !text.includes("}") ||
-    text.length < 20
-  ) {
+  if (!text.includes("}") || text.length < 20) {
     return {
-      objectName: "Souris ordinateur",
-      category: "informatique",
+      objectName: "Objet occasion",
+      category: "general",
       brand: null,
       model: null,
       confidence: 0.3
@@ -173,31 +161,23 @@ AUCUN markdown.
 
   if (!obj) {
     return {
-      objectName: "Souris ordinateur",
-      category: "informatique",
+      objectName: "Objet occasion",
+      category: "general",
       brand: null,
       model: null,
       confidence: 0.3
     };
   }
 
-  return {
-    objectName: obj.objectName || "Objet occasion",
-    category: obj.category || "general",
-    brand: obj.brand || null,
-    model: obj.model || null,
-    confidence: obj.confidence || 0.4
-  };
+  return obj;
 }
 
 /* =========================
-   EBAY
+   EBAY / LBC / VINTED (UNCHANGED)
 ========================= */
 
 async function getEbayPrices(query) {
-
   try {
-
     const tokenRes = await axios.post(
       "https://api.ebay.com/identity/v1/oauth2/token",
       "grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope",
@@ -215,10 +195,7 @@ async function getEbayPrices(query) {
     const res = await axios.get(
       "https://api.ebay.com/buy/browse/v1/item_summary/search",
       {
-        params: {
-          q: query,
-          limit: 20
-        },
+        params: { q: query, limit: 20 },
         headers: {
           Authorization: `Bearer ${token}`,
           "X-EBAY-C-MARKETPLACE-ID": "EBAY_FR"
@@ -226,11 +203,10 @@ async function getEbayPrices(query) {
       }
     );
 
-    const prices =
-      (res.data.itemSummaries || [])
-        .map(i => Number(i.price?.value))
-        .filter(Boolean)
-        .sort((a, b) => a - b);
+    const prices = (res.data.itemSummaries || [])
+      .map(i => Number(i.price?.value))
+      .filter(Boolean)
+      .sort((a, b) => a - b);
 
     if (!prices.length) return null;
 
@@ -239,48 +215,26 @@ async function getEbayPrices(query) {
       max: prices[Math.floor(prices.length * 0.75)],
       source: "ebay"
     };
-
   } catch {
-
-    console.log("EBAY FAIL");
-
     return null;
   }
 }
 
-/* =========================
-   LEBONCOIN
-========================= */
-
 async function getLeboncoinPrices(query) {
-
   try {
-
-    const url =
-      `https://www.leboncoin.fr/recherche?text=${encodeURIComponent(query)}`;
+    const url = `https://www.leboncoin.fr/recherche?text=${encodeURIComponent(query)}`;
 
     const { data } = await axios.get(url, {
       timeout: 15000,
-      headers: {
-        "User-Agent": "Mozilla/5.0"
-      }
+      headers: { "User-Agent": "Mozilla/5.0" }
     });
 
     const $ = cheerio.load(data);
-
     const prices = [];
 
     $("[data-qa-id='aditem_price']").each((_, el) => {
-
-      const txt = $(el)
-        .text()
-        .replace(/[^\d]/g, "");
-
-      const p = parseInt(txt);
-
-      if (p > 0 && p < 50000) {
-        prices.push(p);
-      }
+      const p = parseInt($(el).text().replace(/[^\d]/g, ""));
+      if (p > 0) prices.push(p);
     });
 
     if (!prices.length) return null;
@@ -292,48 +246,26 @@ async function getLeboncoinPrices(query) {
       max: prices[Math.floor(prices.length * 0.8)],
       source: "lbc"
     };
-
   } catch {
-
-    console.log("LBC FAIL");
-
     return null;
   }
 }
 
-/* =========================
-   VINTED
-========================= */
-
 async function getVintedPrices(query) {
-
   try {
-
-    const url =
-      `https://www.vinted.fr/catalog?search_text=${encodeURIComponent(query)}`;
+    const url = `https://www.vinted.fr/catalog?search_text=${encodeURIComponent(query)}`;
 
     const { data } = await axios.get(url, {
       timeout: 15000,
-      headers: {
-        "User-Agent": "Mozilla/5.0"
-      }
+      headers: { "User-Agent": "Mozilla/5.0" }
     });
 
     const $ = cheerio.load(data);
-
     const prices = [];
 
     $("[class*='price']").each((_, el) => {
-
-      const txt = $(el)
-        .text()
-        .replace(/[^\d]/g, "");
-
-      const p = parseInt(txt);
-
-      if (p > 0 && p < 50000) {
-        prices.push(p);
-      }
+      const p = parseInt($(el).text().replace(/[^\d]/g, ""));
+      if (p > 0) prices.push(p);
     });
 
     if (!prices.length) return null;
@@ -345,39 +277,48 @@ async function getVintedPrices(query) {
       max: prices[Math.floor(prices.length * 0.8)],
       source: "vinted"
     };
-
   } catch {
-
-    console.log("VINTED FAIL");
-
     return null;
   }
 }
 
 /* =========================
-   MERGE PRICES
+   MERGE
 ========================= */
 
 function mergePrices(prices) {
-
   const valid = prices.filter(Boolean);
 
   if (!valid.length) {
-    return {
-      min: 5,
-      max: 30,
-      source: "fallback"
-    };
+    return { min: 5, max: 30, source: "fallback" };
   }
 
-  const mins = valid.map(p => p.min);
-  const maxs = valid.map(p => p.max);
-
   return {
-    min: Math.round(Math.min(...mins)),
-    max: Math.round(Math.max(...maxs)),
+    min: Math.round(Math.min(...valid.map(p => p.min))),
+    max: Math.round(Math.max(...valid.map(p => p.max))),
     sources: valid.map(v => v.source)
   };
+}
+
+/* =========================
+   LENS QUERY FUSION
+========================= */
+
+function buildLensQuery(vision, ocr) {
+  const base = [
+    vision.brand,
+    vision.model,
+    vision.objectName
+  ].filter(Boolean).join(" ");
+
+  if (!ocr) return base;
+
+  const clean = ocr
+    .replace(/[^a-zA-Z0-9À-ÿ\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return `${base} ${clean}`.trim();
 }
 
 /* =========================
@@ -385,37 +326,19 @@ function mergePrices(prices) {
 ========================= */
 
 app.post("/analyze", async (req, res) => {
-
   try {
+
+    const { images } = req.body;
+    if (!images?.length) return res.status(400).json({ error: "no images" });
 
     console.log("📸 analyze hybrid");
 
-    console.log("HEADERS:", req.headers["content-type"]);
-
-    console.log(
-      "BODY SIZE:",
-      JSON.stringify(req.body)?.length
-    );
-
-    const { images } = req.body;
-
-    if (!images?.length) {
-      return res.status(400).json({
-        error: "no images"
-      });
-    }
-
     const object = await recognizeObject(images);
 
-    const query =
-      [
-        object.brand,
-        object.model,
-        object.objectName
-      ]
-      .filter(Boolean)
-      .join(" ");
+    const ocrText = await runOCR(images);
+    console.log("OCR:", ocrText);
 
+    const query = buildLensQuery(object, ocrText);
     console.log("QUERY:", query);
 
     const [ebay, lbc, vinted] = await Promise.all([
@@ -424,96 +347,36 @@ app.post("/analyze", async (req, res) => {
       getVintedPrices(query)
     ]);
 
-    const priceRange =
-      mergePrices([ebay, lbc, vinted]);
+    const priceRange = mergePrices([ebay, lbc, vinted]);
 
     const listing = {
-
       title: object.objectName,
-
-      description:
-        `Vends ${object.objectName} en bon état. Fonctionnel.`,
-
       priceMin: priceRange.min,
-
       priceMax: priceRange.max,
-
-      suggestedPrice:
-        Math.round(
-          (priceRange.min + priceRange.max) / 2
-        ),
-
-      estimatedDays: 7,
-
-      platform:
-        object.category === "fashion"
-          ? "Vinted"
-          : "Leboncoin"
+      suggestedPrice: Math.round((priceRange.min + priceRange.max) / 2),
+      estimatedDays: 7
     };
 
     return res.json({
-
       status: "success",
-
       product: object,
-
+      ocr: ocrText,
+      query,
       priceMin: priceRange.min,
-
       priceMax: priceRange.max,
-
-      suggestedPrice:
-        listing.suggestedPrice,
-
+      suggestedPrice: listing.suggestedPrice,
       listing,
-
-      debug: {
-        ebay,
-        lbc,
-        vinted
-      }
+      debug: { ebay, lbc, vinted }
     });
 
   } catch (e) {
-
-    console.error("CRASH:", e.message);
-
     return res.json({
-
       status: "fallback",
-
-      product: {
-        objectName: "Objet occasion",
-        category: "general"
-      },
-
-      priceMin: 5,
-
-      priceMax: 30,
-
-      suggestedPrice: 15,
-
-      listing: {
-        title: "Objet occasion",
-        description:
-          "Objet en état correct.",
-        priceMin: 5,
-        priceMax: 30,
-        suggestedPrice: 15,
-        estimatedDays: 10,
-        platform: "Leboncoin"
-      }
+      error: e.message
     });
   }
 });
 
-/* =========================
-   HEALTH
-========================= */
+app.get("/health", (_, res) => res.json({ ok: true }));
 
-app.get("/health", (_, res) => {
-  res.json({ ok: true });
-});
-
-app.listen(PORT, () => {
-  console.log("🚀 HYBRID OBJECT AI READY");
-});
+app.listen(PORT, () => console.log("🚀 READY"));
