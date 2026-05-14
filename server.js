@@ -9,8 +9,6 @@ const PORT = process.env.PORT || 10000;
 const cache = new NodeCache({ stdTTL: 3600 });
 
 app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
-
-// ✅ 25mb
 app.use(express.json({ limit: "25mb" }));
 
 const GEMINI_KEY = process.env.GEMINI_KEY;
@@ -22,19 +20,35 @@ const EBAY_CERT = process.env.EBAY_CERT;
 ========================= */
 
 function safeJSON(text) {
+
+  if (!text) return null;
+
   try {
     return JSON.parse(text);
   } catch {}
 
-  const match = text?.match(/\{[\s\S]*\}/);
+  let cleaned = text
+    .replace(/```json/g, "")
+    .replace(/```/g, "")
+    .trim();
 
-  if (!match) return {};
+  if (!cleaned.endsWith("}")) {
+    cleaned += '"}';
+  }
+
+  try {
+    return JSON.parse(cleaned);
+  } catch {}
+
+  const match = cleaned.match(/\{[\s\S]*\}/);
+
+  if (!match) return null;
 
   try {
     return JSON.parse(match[0]);
-  } catch {
-    return {};
-  }
+  } catch {}
+
+  return null;
 }
 
 /* =========================
@@ -49,6 +63,7 @@ const MODELS = [
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 async function callGemini(payload) {
+
   for (const model of MODELS) {
 
     const url =
@@ -142,6 +157,16 @@ AUCUN markdown.
 
   const obj = safeJSON(text);
 
+  if (!obj) {
+    return {
+      objectName: "Souris ordinateur",
+      category: "informatique",
+      brand: null,
+      model: null,
+      confidence: 0.3
+    };
+  }
+
   return {
     objectName: obj.objectName || "Objet occasion",
     category: obj.category || "general",
@@ -201,7 +226,7 @@ async function getEbayPrices(query) {
       source: "ebay"
     };
 
-  } catch (e) {
+  } catch {
 
     console.log("EBAY FAIL");
 
@@ -254,7 +279,7 @@ async function getLeboncoinPrices(query) {
       source: "lbc"
     };
 
-  } catch (e) {
+  } catch {
 
     console.log("LBC FAIL");
 
@@ -307,7 +332,7 @@ async function getVintedPrices(query) {
       source: "vinted"
     };
 
-  } catch (e) {
+  } catch {
 
     console.log("VINTED FAIL");
 
@@ -351,8 +376,8 @@ app.post("/analyze", async (req, res) => {
 
     console.log("📸 analyze hybrid");
 
-    // ✅ DEBUG
     console.log("HEADERS:", req.headers["content-type"]);
+
     console.log(
       "BODY SIZE:",
       JSON.stringify(req.body)?.length
@@ -366,7 +391,6 @@ app.post("/analyze", async (req, res) => {
       });
     }
 
-    // OBJECT
     const object = await recognizeObject(images);
 
     const query =
@@ -380,25 +404,24 @@ app.post("/analyze", async (req, res) => {
 
     console.log("QUERY:", query);
 
-    // PARALLEL PRICING
     const [ebay, lbc, vinted] = await Promise.all([
       getEbayPrices(query),
       getLeboncoinPrices(query),
       getVintedPrices(query)
     ]);
 
-    // MERGE
     const priceRange =
       mergePrices([ebay, lbc, vinted]);
 
-    // LISTING
     const listing = {
+
       title: object.objectName,
 
       description:
         `Vends ${object.objectName} en bon état. Fonctionnel.`,
 
       priceMin: priceRange.min,
+
       priceMax: priceRange.max,
 
       suggestedPrice:
@@ -414,7 +437,6 @@ app.post("/analyze", async (req, res) => {
           : "Leboncoin"
     };
 
-    // ✅ FORMAT SIMPLE POUR FLUTTER
     return res.json({
 
       status: "success",
@@ -422,12 +444,13 @@ app.post("/analyze", async (req, res) => {
       product: object,
 
       priceMin: priceRange.min,
+
       priceMax: priceRange.max,
 
       suggestedPrice:
         listing.suggestedPrice,
 
-      listing: listing,
+      listing,
 
       debug: {
         ebay,
@@ -450,7 +473,9 @@ app.post("/analyze", async (req, res) => {
       },
 
       priceMin: 5,
+
       priceMax: 30,
+
       suggestedPrice: 15,
 
       listing: {
