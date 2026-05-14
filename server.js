@@ -9,7 +9,9 @@ const PORT = process.env.PORT || 10000;
 const cache = new NodeCache({ stdTTL: 3600 });
 
 app.use(cors({ origin: "*", methods: ["GET", "POST"] }));
-app.use(express.json({ limit: "15mb" }));
+
+// ✅ 25mb
+app.use(express.json({ limit: "25mb" }));
 
 const GEMINI_KEY = process.env.GEMINI_KEY;
 const EBAY_APP_ID = process.env.EBAY_APP_ID;
@@ -25,6 +27,7 @@ function safeJSON(text) {
   } catch {}
 
   const match = text?.match(/\{[\s\S]*\}/);
+
   if (!match) return {};
 
   try {
@@ -38,34 +41,55 @@ function safeJSON(text) {
    GEMINI CALL
 ========================= */
 
-const MODELS = ["gemini-2.5-flash", "gemini-2.5-flash-lite"];
+const MODELS = [
+  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite"
+];
 
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 
 async function callGemini(payload) {
   for (const model of MODELS) {
-    const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_KEY}`;
+
+    const url =
+      `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_KEY}`;
 
     try {
-      const res = await axios.post(url, payload, { timeout: 30000 });
+
+      const res = await axios.post(url, payload, {
+        timeout: 30000,
+        headers: {
+          "Content-Type": "application/json"
+        }
+      });
+
       return res.data;
+
     } catch (e) {
+
+      console.log("⚠️ GEMINI FAIL:", model);
+
       if (e.response?.status === 503) {
-        await sleep(800);
+        await sleep(1000);
         continue;
       }
     }
   }
+
   return null;
 }
 
 /* =========================
-   OBJECT RECOGNITION (UNIVERSAL)
+   OBJECT RECOGNITION
 ========================= */
 
 async function recognizeObject(images) {
+
   const parts = images.slice(0, 3).map(b64 => ({
-    inline_data: { mime_type: "image/jpeg", data: b64 }
+    inline_data: {
+      mime_type: "image/jpeg",
+      data: b64
+    }
   }));
 
   const payload = {
@@ -74,51 +98,74 @@ async function recognizeObject(images) {
         ...parts,
         {
           text: `
-Tu identifies tout objet visible (très important).
+Tu es un expert mondial de reconnaissance d’objets d’occasion.
 
-Retour JSON:
+Analyse les photos.
+
+IMPORTANT :
+- ne jamais répondre "unknown"
+- ne jamais répondre "objet inconnu"
+- toujours donner l’objet le PLUS PROBABLE
+- utiliser forme, logo, couleurs, design, matière
+- si électronique → essayer marque/modèle
+- si vêtement → type exact
+- si meuble → type précis
+- si accessoire → catégorie précise
+
+Retour JSON STRICT :
+
 {
- "objectName": "",
- "category": "",
- "confidence": 0.0
+  "objectName": "",
+  "category": "",
+  "brand": "",
+  "model": "",
+  "confidence": 0.0
 }
 
-Règles:
-- jamais unknown
-- toujours une hypothèse réaliste
+AUCUN markdown.
 `
         }
       ]
-    }]
+    }],
+    generationConfig: {
+      temperature: 0.2,
+      maxOutputTokens: 300
+    }
   };
 
   const data = await callGemini(payload);
 
-  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  const text =
+    data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+
+  console.log("VISION RAW:", text);
 
   const obj = safeJSON(text);
 
-  return obj.objectName
-    ? obj
-    : { objectName: "Objet générique", category: "general", confidence: 0.3 };
+  return {
+    objectName: obj.objectName || "Objet occasion",
+    category: obj.category || "general",
+    brand: obj.brand || null,
+    model: obj.model || null,
+    confidence: obj.confidence || 0.4
+  };
 }
 
 /* =========================
-   EBAY PRICES (API OFFICIELLE)
+   EBAY
 ========================= */
 
 async function getEbayPrices(query) {
-  const key = `ebay_${query}`;
-  const cached = cache.get(key);
-  if (cached) return cached;
 
   try {
+
     const tokenRes = await axios.post(
       "https://api.ebay.com/identity/v1/oauth2/token",
       "grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope",
       {
         headers: {
-          Authorization: `Basic ${Buffer.from(`${EBAY_APP_ID}:${EBAY_CERT}`).toString("base64")}`,
+          Authorization:
+            `Basic ${Buffer.from(`${EBAY_APP_ID}:${EBAY_CERT}`).toString("base64")}`,
           "Content-Type": "application/x-www-form-urlencoded"
         }
       }
@@ -129,7 +176,10 @@ async function getEbayPrices(query) {
     const res = await axios.get(
       "https://api.ebay.com/buy/browse/v1/item_summary/search",
       {
-        params: { q: query, limit: 20 },
+        params: {
+          q: query,
+          limit: 20
+        },
         headers: {
           Authorization: `Bearer ${token}`,
           "X-EBAY-C-MARKETPLACE-ID": "EBAY_FR"
@@ -137,10 +187,11 @@ async function getEbayPrices(query) {
       }
     );
 
-    const prices = (res.data.itemSummaries || [])
-      .map(i => Number(i.price?.value))
-      .filter(Boolean)
-      .sort((a, b) => a - b);
+    const prices =
+      (res.data.itemSummaries || [])
+        .map(i => Number(i.price?.value))
+        .filter(Boolean)
+        .sort((a, b) => a - b);
 
     if (!prices.length) return null;
 
@@ -150,35 +201,52 @@ async function getEbayPrices(query) {
       source: "ebay"
     };
 
-  } catch {
+  } catch (e) {
+
+    console.log("EBAY FAIL");
+
     return null;
   }
 }
 
 /* =========================
-   LEBONCOIN SCRAPING
+   LEBONCOIN
 ========================= */
 
 async function getLeboncoinPrices(query) {
+
   try {
-    const url = `https://www.leboncoin.fr/recherche?text=${encodeURIComponent(query)}`;
+
+    const url =
+      `https://www.leboncoin.fr/recherche?text=${encodeURIComponent(query)}`;
 
     const { data } = await axios.get(url, {
-      headers: { "User-Agent": "Mozilla/5.0" }
+      timeout: 15000,
+      headers: {
+        "User-Agent": "Mozilla/5.0"
+      }
     });
 
     const $ = cheerio.load(data);
+
     const prices = [];
 
     $("[data-qa-id='aditem_price']").each((_, el) => {
-      const txt = $(el).text().replace(/[^\d]/g, "");
+
+      const txt = $(el)
+        .text()
+        .replace(/[^\d]/g, "");
+
       const p = parseInt(txt);
-      if (p > 0) prices.push(p);
+
+      if (p > 0 && p < 50000) {
+        prices.push(p);
+      }
     });
 
     if (!prices.length) return null;
 
-    prices.sort((a,b)=>a-b);
+    prices.sort((a, b) => a - b);
 
     return {
       min: prices[Math.floor(prices.length * 0.2)],
@@ -186,35 +254,52 @@ async function getLeboncoinPrices(query) {
       source: "lbc"
     };
 
-  } catch {
+  } catch (e) {
+
+    console.log("LBC FAIL");
+
     return null;
   }
 }
 
 /* =========================
-   VINTED SCRAPING
+   VINTED
 ========================= */
 
 async function getVintedPrices(query) {
+
   try {
-    const url = `https://www.vinted.fr/catalog?search_text=${encodeURIComponent(query)}`;
+
+    const url =
+      `https://www.vinted.fr/catalog?search_text=${encodeURIComponent(query)}`;
 
     const { data } = await axios.get(url, {
-      headers: { "User-Agent": "Mozilla/5.0" }
+      timeout: 15000,
+      headers: {
+        "User-Agent": "Mozilla/5.0"
+      }
     });
 
     const $ = cheerio.load(data);
+
     const prices = [];
 
     $("[class*='price']").each((_, el) => {
-      const txt = $(el).text().replace(/[^\d]/g, "");
+
+      const txt = $(el)
+        .text()
+        .replace(/[^\d]/g, "");
+
       const p = parseInt(txt);
-      if (p > 0) prices.push(p);
+
+      if (p > 0 && p < 50000) {
+        prices.push(p);
+      }
     });
 
     if (!prices.length) return null;
 
-    prices.sort((a,b)=>a-b);
+    prices.sort((a, b) => a - b);
 
     return {
       min: prices[Math.floor(prices.length * 0.2)],
@@ -222,20 +307,28 @@ async function getVintedPrices(query) {
       source: "vinted"
     };
 
-  } catch {
+  } catch (e) {
+
+    console.log("VINTED FAIL");
+
     return null;
   }
 }
 
 /* =========================
-   HYBRID PRICE ENGINE (IMPORTANT)
+   MERGE PRICES
 ========================= */
 
 function mergePrices(prices) {
+
   const valid = prices.filter(Boolean);
 
   if (!valid.length) {
-    return { min: 5, max: 30, source: "fallback" };
+    return {
+      min: 5,
+      max: 30,
+      source: "fallback"
+    };
   }
 
   const mins = valid.map(p => p.min);
@@ -244,7 +337,7 @@ function mergePrices(prices) {
   return {
     min: Math.round(Math.min(...mins)),
     max: Math.round(Math.max(...maxs)),
-    sources: valid.map(p => p.source)
+    sources: valid.map(v => v.source)
   };
 }
 
@@ -253,61 +346,123 @@ function mergePrices(prices) {
 ========================= */
 
 app.post("/analyze", async (req, res) => {
-  try {
-    const { images } = req.body;
 
-    if (!images?.length) {
-      return res.status(400).json({ error: "no images" });
-    }
+  try {
 
     console.log("📸 analyze hybrid");
 
-    // 1. OBJECT
+    // ✅ DEBUG
+    console.log("HEADERS:", req.headers["content-type"]);
+    console.log(
+      "BODY SIZE:",
+      JSON.stringify(req.body)?.length
+    );
+
+    const { images } = req.body;
+
+    if (!images?.length) {
+      return res.status(400).json({
+        error: "no images"
+      });
+    }
+
+    // OBJECT
     const object = await recognizeObject(images);
 
-    const query = object.objectName;
+    const query =
+      [
+        object.brand,
+        object.model,
+        object.objectName
+      ]
+      .filter(Boolean)
+      .join(" ");
 
-    // 2. PARALLEL PRICING (IMPORTANT PERF)
+    console.log("QUERY:", query);
+
+    // PARALLEL PRICING
     const [ebay, lbc, vinted] = await Promise.all([
       getEbayPrices(query),
       getLeboncoinPrices(query),
       getVintedPrices(query)
     ]);
 
-    // 3. MERGE PRICES
-    const priceRange = mergePrices([ebay, lbc, vinted]);
+    // MERGE
+    const priceRange =
+      mergePrices([ebay, lbc, vinted]);
 
-    // 4. LISTING SIMPLE (STABLE)
+    // LISTING
     const listing = {
       title: object.objectName,
-      description: "Objet en bon état. Fonctionnel.",
+
+      description:
+        `Vends ${object.objectName} en bon état. Fonctionnel.`,
+
       priceMin: priceRange.min,
       priceMax: priceRange.max,
-      suggestedPrice: Math.round((priceRange.min + priceRange.max) / 2),
+
+      suggestedPrice:
+        Math.round(
+          (priceRange.min + priceRange.max) / 2
+        ),
+
       estimatedDays: 7,
-      platform: "Leboncoin"
+
+      platform:
+        object.category === "fashion"
+          ? "Vinted"
+          : "Leboncoin"
     };
 
+    // ✅ FORMAT SIMPLE POUR FLUTTER
     return res.json({
-      object,
-      prices: { ebay, lbc, vinted, merged: priceRange },
-      listing,
-      status: "success"
+
+      status: "success",
+
+      product: object,
+
+      priceMin: priceRange.min,
+      priceMax: priceRange.max,
+
+      suggestedPrice:
+        listing.suggestedPrice,
+
+      listing: listing,
+
+      debug: {
+        ebay,
+        lbc,
+        vinted
+      }
     });
 
   } catch (e) {
+
     console.error("CRASH:", e.message);
 
     return res.json({
-      object: { objectName: "Objet générique", category: "general" },
-      prices: { merged: { min: 5, max: 30 } },
+
+      status: "fallback",
+
+      product: {
+        objectName: "Objet occasion",
+        category: "general"
+      },
+
+      priceMin: 5,
+      priceMax: 30,
+      suggestedPrice: 15,
+
       listing: {
-        title: "Objet",
+        title: "Objet occasion",
+        description:
+          "Objet en état correct.",
         priceMin: 5,
         priceMax: 30,
-        description: "Estimation approximative"
-      },
-      status: "fallback"
+        suggestedPrice: 15,
+        estimatedDays: 10,
+        platform: "Leboncoin"
+      }
     });
   }
 });
