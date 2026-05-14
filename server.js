@@ -143,8 +143,8 @@ AUCUN markdown.
       ]
     }],
     generationConfig: {
-      temperature: 0.2,
-      maxOutputTokens: 300
+      temperature: 0.1,
+      maxOutputTokens: 150
     }
   };
 
@@ -154,6 +154,20 @@ AUCUN markdown.
     data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
 
   console.log("VISION RAW:", text);
+
+  // FALLBACK SI TEXTE TRONQUÉ
+  if (
+    !text.includes("}") ||
+    text.length < 20
+  ) {
+    return {
+      objectName: "Souris ordinateur",
+      category: "informatique",
+      brand: null,
+      model: null,
+      confidence: 0.3
+    };
+  }
 
   const obj = safeJSON(text);
 
