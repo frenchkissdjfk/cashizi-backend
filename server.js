@@ -61,11 +61,11 @@ function extractJSON(text) {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-//  Appel Gemini Vision — v1beta — avec fallback modèles
+//  Appel Gemini Vision — v1 — avec fallback modèles
 // ════════════════════════════════════════════════════════════════════════
 async function callGemini(payload) {
   for (const model of MODELS) {
-    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`;
+    const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_KEY}`;
     try {
       const res  = await axios.post(url, payload, {
         headers: { "Content-Type": "application/json" },
