@@ -11,7 +11,8 @@ app.use(express.json({ limit: "50mb" }));
 const GEMINI_KEY = process.env.GEMINI_KEY;
 
 async function analyzeWithGemini(images) {
-  const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
+  // On passe en v1beta qui est plus permissive sur les noms de modèles
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
   
   const imageParts = images.slice(0, 3).map(b64 => {
     const cleanB64 = b64.includes(",") ? b64.split(",")[1] : b64;
@@ -27,7 +28,7 @@ async function analyzeWithGemini(images) {
     contents: [{
       parts: [
         ...imageParts,
-        { text: "Tu es un expert en revente. Analyse ces 3 photos comme google lens. Donne le nom, marque, modèle, prix occasion (Min/Max), temps de vente, conclusion (rentable ou pas), annonce complète (titre et description) et conseils. Réponds EXCLUSIVEMENT en JSON strict avec cette structure: {\"name\":\"\",\"priceMin\":0,\"priceMax\":0,\"sellingTime\":\"\",\"conclusion\":\"\",\"adTitle\":\"\",\"adDescription\":\"\",\"tips\":\"\"}" }
+        { text: "Identifie cet objet (nom, marque, modèle). Donne une estimation de prix occasion (Min/Max Euros), temps de vente, et une conclusion. Crée aussi une annonce (titre et description). Réponds UNIQUEMENT en JSON avec cette structure: {\"name\":\"\",\"priceMin\":0,\"priceMax\":0,\"sellingTime\":\"\",\"conclusion\":\"\",\"adTitle\":\"\",\"adDescription\":\"\",\"tips\":\"\"}" }
       ]
     }],
     generationConfig: {
@@ -48,9 +49,7 @@ async function analyzeWithGemini(images) {
 
     let rawText = res.data.candidates[0].content.parts[0].text;
     
-    // Nettoyage ultra-sécurisé du JSON
     let cleanJson = rawText.trim();
-    // On cherche le premier '{' et le dernier '}' pour extraire le JSON pur
     const firstBracket = cleanJson.indexOf('{');
     const lastBracket = cleanJson.lastIndexOf('}');
     
@@ -61,7 +60,10 @@ async function analyzeWithGemini(images) {
     return JSON.parse(cleanJson);
 
   } catch (error) {
-    console.error("Détails Erreur:", error.message);
+    // Log plus précis pour voir l'origine de la 404
+    if (error.response) {
+      console.error("ERREUR GOOGLE:", error.response.status, error.response.data);
+    }
     throw error;
   }
 }
@@ -71,11 +73,12 @@ app.post("/analyze", async (req, res) => {
   try {
     const { images } = req.body;
     if (!images || images.length < 3) {
+      console.log("❌ Manque des images");
       return res.status(400).json({ error: "3 photos requises" });
     }
 
     const result = await analyzeWithGemini(images);
-    console.log("✅ OK :", result.name);
+    console.log("✅ ANALYSE OK :", result.name);
     res.json({ status: "success", ...result });
 
   } catch (err) {
