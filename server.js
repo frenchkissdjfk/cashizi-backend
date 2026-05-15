@@ -24,9 +24,9 @@ if (!GEMINI_KEY) {
 
 // ── Modèles avec fallback ─────────────────────────────────────────────
 const MODELS = [
-  "gemini-3-flash",
-  "gemini-3-flash-lite",
-  "gemini-1.5-flash",
+  "gemini-3-flash-preview",     // C'est le vrai nom technique du modèle que tu as testé
+  "gemini-3.1-flash-lite",      // La version Lite officielle
+  "gemini-2.5-flash",
 ];
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -61,11 +61,11 @@ function extractJSON(text) {
 }
 
 // ════════════════════════════════════════════════════════════════════════
-//  Appel Gemini Vision — v1 — avec fallback modèles
+//  Appel Gemini Vision — v1beta — avec fallback modèles
 // ════════════════════════════════════════════════════════════════════════
 async function callGemini(payload) {
   for (const model of MODELS) {
-    const url = `https://generativelanguage.googleapis.com/v1/models/${model}:generateContent?key=${GEMINI_KEY}`;
+    const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${GEMINI_KEY}`;
     try {
       const res  = await axios.post(url, payload, {
         headers: { "Content-Type": "application/json" },
