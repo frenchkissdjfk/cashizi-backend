@@ -145,8 +145,8 @@ Règles pour credible :
         parts: [...imageParts, { text: prompt }],
       }],
       generationConfig: {
-        temperature: 0.2,      // peu de créativité = réponses cohérentes
-        maxOutputTokens: 1000,
+        temperature: 0.4,      // peu de créativité = réponses cohérentes
+        maxOutputTokens: 2000,
       },
     };
 
