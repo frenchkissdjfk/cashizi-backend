@@ -6,18 +6,15 @@ const app = express();
 const PORT = process.env.PORT || 10000;
 
 app.use(cors({ origin: "*" }));
-app.use(express.json({ limit: "15mb" }));
+app.use(express.json({ limit: "20mb" })); // Large pour 3 photos
 
 const GEMINI_KEY = process.env.GEMINI_KEY;
-const EBAY_APP_ID = process.env.EBAY_APP_ID;
-const EBAY_CERT = process.env.EBAY_CERT;
 
-// --- RECONNAISSANCE + STRATÉGIE ---
 async function analyzeWithGemini(images) {
-  // Utilisation de 1.5-flash : ultra rapide et moins cher pour la vision
+  // URL propre pour ton accès payant
   const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${GEMINI_KEY}`;
   
-  const imageParts = images.slice(0, 3).map(b64 => ({
+  const imageParts = images.map(b64 => ({
     inline_data: { mime_type: "image/jpeg", data: b64 }
   }));
 
@@ -25,59 +22,60 @@ async function analyzeWithGemini(images) {
     contents: [{
       parts: [
         ...imageParts,
-        { text: "Identifie précisément cet objet d'occasion. Donne son nom, marque, modèle, état estimé et une requête de recherche optimisée pour eBay. Réponds UNIQUEMENT en JSON : {\"name\":\"\",\"brand\":\"\",\"model\":\"\",\"condition\":\"\",\"searchQuery\":\"\"}" }
+        { text: `
+Identifie cet objet comme Google Lens.
+Aide-moi à le vendre sur Leboncoin ou Vinted.
+
+Réponds UNIQUEMENT en JSON avec cette structure :
+{
+  "name": "Marque et modèle précis",
+  "priceMin": 10,
+  "priceMax": 30,
+  "sellingTime": "Estimation temps de vente",
+  "conclusion": "Est-ce que ça vaut le coup ? Pourquoi ?",
+  "adTitle": "Titre d'annonce optimisé",
+  "adDescription": "Description complète avec points forts",
+  "tips": "Conseils photo et négociation"
+}
+` }
       ]
-    }]
+    }],
+    generationConfig: { temperature: 0.2, response_mime_type: "application/json" }
   };
 
-  const res = await axios.post(url, payload);
-  return JSON.parse(res.data.candidates[0].content.parts[0].text.replace(/```json|```/g, ""));
+  const res = await axios.post(url, payload, { timeout: 30000 });
+  
+  // Parse le JSON de Gemini
+  const content = res.data.candidates[0].content.parts[0].text;
+  return JSON.parse(content);
 }
 
-// --- PRIX RÉELS VIA EBAY ---
-async function getEbayData(query) {
-  try {
-    const auth = Buffer.from(`${EBAY_APP_ID}:${EBAY_CERT}`).toString("base64");
-    const tokenRes = await axios.post("https://api.ebay.com/identity/v1/oauth2/token", 
-      "grant_type=client_credentials&scope=https://api.ebay.com/oauth/api_scope",
-      { headers: { Authorization: `Basic ${auth}`, "Content-Type": "application/x-www-form-urlencoded" } }
-    );
-
-    const res = await axios.get("https://api.ebay.com/buy/browse/v1/item_summary/search", {
-      params: { q: query, limit: 10, filter: "buyingOptions:{FIXED_PRICE}" },
-      headers: { Authorization: `Bearer ${tokenRes.data.access_token}`, "X-EBAY-C-MARKETPLACE-ID": "EBAY_FR" }
-    });
-
-    const prices = (res.data.itemSummaries || []).map(i => parseFloat(i.price.value)).sort((a, b) => a - b);
-    return prices.length ? { min: prices[0], max: prices[prices.length - 1], avg: prices[Math.floor(prices.length / 2)] } : null;
-  } catch (e) { return null; }
-}
-
-// --- SYNTHÈSE FINALE ---
 app.post("/analyze", async (req, res) => {
+  console.log("--- ANALYSE EN COURS ---");
   try {
     const { images } = req.body;
-    const product = await analyzeWithGemini(images);
-    const market = await getEbayData(product.searchQuery || product.name);
+    if (!images || images.length === 0) {
+      return res.status(400).json({ error: "Aucune photo reçue" });
+    }
 
-    // Si eBay ne trouve rien, Gemini estime selon sa base de données
-    const priceMin = market ? market.min : 10;
-    const priceMax = market ? market.max : 50;
+    const result = await analyzeWithGemini(images);
+    console.log("✅ Objet identifié :", result.name);
 
     res.json({
       status: "success",
-      product,
-      estimation: {
-        priceRange: `${priceMin}€ - ${priceMax}€`,
-        suggested: Math.round((priceMin + priceMax) / 2),
-        speed: "7-15 jours", // Estimation basée sur la popularité (on peut l'affiner via Gemini)
-        platform: "eBay / Leboncoin"
-      }
+      ...result
     });
+
   } catch (err) {
-    res.status(500).json({ error: "Erreur analyse" });
+    console.error("🔥 ERREUR :", err.message);
+    res.status(500).json({ 
+      status: "error", 
+      message: "Gemini est timide, réessaye !",
+      details: err.message 
+    });
   }
 });
 
 app.get("/health", (req, res) => res.json({ status: "ok" }));
-app.listen(PORT, () => console.log(`🚀 CASHIZI READY ON PORT ${PORT}`));
+
+app.listen(PORT, () => console.log(`🚀 CASHIZI SURPUISSANT SUR PORT ${PORT}`));
