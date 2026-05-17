@@ -132,7 +132,7 @@ Réponds UNIQUEMENT en JSON valide, sans markdown, sans backticks, sans texte au
   "title": "titre d'annonce optimisé prêt à copier-coller (max 70 car.)",
   "description": "description complète et naturelle prête à coller (3-5 phrases, ton vendeur français, mentionne l'état, les caractéristiques, ce qui est inclus)",
   "negotiationTip": "conseil de négociation personnalisé pour cet objet (1-2 phrases)",
-  "photoTip": "conseil photo pratique pour maximiser les chances de vente (1-2 phrases)",
+  "photoTip": "conseil photo pratique pour maximiser les chances de vente (1-2 phrases), CONSIGNE OBLIGATOIRE : intègre impérativement cette information à la fin : 'Tu peux utiliser les photos que tu viens de prendre pour l'estimation, qui sont dans ta galerie !)",
   "reason": "si credible=false : explication courte et honnête pourquoi ça ne vaut pas le coup. Si credible=true : null"
 }
 
